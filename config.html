@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ro">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>NECD · Configurare acces</title>
+<style>body{font-family:system-ui,sans-serif;background:#f6f8fb;color:#172d40;margin:0}.wrap{max-width:520px;margin:12vh auto;padding:30px;background:white;border:1px solid #e1e8f0;border-radius:14px}h1{font-size:24px}p{line-height:1.5;color:#5d7080}label{display:block;margin:20px 0 8px;font-weight:600}input{width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccd8e5;border-radius:8px}button{margin-top:18px;padding:12px 18px;background:#245cbd;color:white;border:0;border-radius:8px;cursor:pointer}.error{color:#a52525}</style></head>
+<body><main class="wrap"><h1>Configurare acces NECD</h1><p>Introdu o singură dată tokenul GitHub pentru repository-ul privat. Va fi păstrat doar în acest browser, nu în codul public.</p><p id="msg" class="error"></p><form id="form"><label for="token">Token GitHub</label><input id="token" type="password" required autocomplete="off" placeholder="github_pat_…"><button type="submit">Salvează și deschide aplicația</button></form></main>
+<script>
+const key='necd-v4-access-token';
+if(new URLSearchParams(location.search).has('invalid'))document.getElementById('msg').textContent='Tokenul anterior a fost respins de GitHub (401). Creează unul nou și introdu-l aici.';
+document.getElementById('form').addEventListener('submit',e=>{
+ e.preventDefault();const token=document.getElementById('token').value.trim();
+ if(!token){document.getElementById('msg').textContent='Introdu tokenul.';return;}
+ localStorage.setItem(key,token);location.replace('index.html');
+});
+</script></body></html>

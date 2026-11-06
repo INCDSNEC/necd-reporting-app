@@ -545,7 +545,7 @@ function setup(){
  $('manualForm').addEventListener('submit',ev=>{ev.preventDefault();safely(()=>handleManual(ev));});
  $('exportBtn').addEventListener('click',()=>safely(async()=>{const result=await makeReport();await window.NECD_CLOUD.saveReport(result.blob,auditCsv(),result.year);download(result.blob,`NECD_Art9_${result.year}.xlsx`);notice('Excelul NECD actualizat a fost descărcat.','ok');}));
  $('csvBtn').addEventListener('click',()=>download(auditCsv(),'NECD_QAQC.csv'));
- $('newReportBtn').addEventListener('click',()=>safely(async()=>{
+ $('newReportBtn')?.addEventListener('click',()=>safely(async()=>{
   if(!window.NECD_CLOUD?.isConnected())throw Error('Google Drive nu este conectat.');
   const count=state.records.length;
   if(!window.confirm(count

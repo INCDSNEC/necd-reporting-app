@@ -432,7 +432,6 @@ function render(){
  $('fileHint').textContent=LAB_CATEGORIES.find(x=>x.id===state.category)?.subtitle||'';
  $('exportBtn').disabled=!state.template||!d.some(x=>x.status!=='invalid')||!window.NECD_CLOUD?.isConnected();
  $('csvBtn').disabled=!d.length;
- $('yearCaption').textContent='Raport '+state.year;
 }
 function manualLayout(){
  const subtype=$('manualType');

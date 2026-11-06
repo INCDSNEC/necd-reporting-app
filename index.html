@@ -5,9 +5,9 @@
 <body>
 <header><div class="layout navbar"><b class="logo">NECD</b></div></header>
 <main class="layout">
- <div class="hero"><h1>NECD Submission</h1></div>
+ <div class="hero"><h1>NECD Submission</h1><span id="cloudState" class="muted" aria-live="polite">Conectare la Google Drive…</span></div>
  <div id="message" role="status" aria-live="polite"></div>
- <section class="panel cloud"><div class="panel-head"><div><h2>Spațiu de lucru</h2><p>Raport unic, salvat în GitHub privat și accesibil de pe mai multe calculatoare.</p></div><small id="cloudState">Neconectat</small></div>
+ <section class="panel cloud"><div class="panel-head"><div><h2>Spațiu de lucru</h2><p>Raport unic, salvat în GitHub privat și accesibil de pe mai multe calculatoare.</p></div><small>Google Drive</small></div>
  <form id="connectForm" class="cloud-form"><label class="token"><span>Token de acces</span><input type="password" id="gitToken" required placeholder="github_pat_…" autocomplete="off"></label><button type="submit" class="primary">Conectează</button></form>
  <div id="online" hidden><div class="cloud-actions"><span class="saved"><i class="dot ok"></i> Conectat la arhiva privată</span><button id="refreshBtn" class="quiet">Sincronizează</button><button id="onlineReportBtn" class="quiet">Descarcă raportul salvat</button><button id="disconnectBtn" class="quiet">Deconectează</button></div></div>
  

@@ -360,9 +360,14 @@ function cellRow(colvals,z,dateId){
 }
 const apply=(map,row,fields)=>{if(!map.has(row))map.set(row,{});Object.assign(map.get(row),fields);};
 async function makeReport(){
- if(!state.template)throw Error('Șablonul din repository-ul privat nu este disponibil.');
+ if(!state.template)throw Error('Șablonul Excel NECD din Google Drive nu este disponibil.');
  const entries=evalAll().filter(e=>e.status!=='invalid');
- if(!entries.length)throw Error('Nu există încă date de introdus în raport.');
+ if(!entries.length){
+  const otherYears=[...new Set(state.records.map(x=>Number(x.year)).filter(y=>Number.isInteger(y)&&y!==state.year))].sort();
+  const invalid=evalAll();
+  if(invalid.length)throw Error('Înregistrările pentru anul '+state.year+' nu conțin valori numerice valide. Verifică atenționările QA/QC.');
+  throw Error('Nu există înregistrări pentru anul '+state.year+'.'+(otherYears.length?' Există date pentru: '+otherYears.join(', ')+'.':''));
+ }
  const wb=await workbookFromBuffer(state.template.buffer);
  const terrestrial=await loadSheet(wb,'(4) Terrestrial'),additional=await loadSheet(wb,'(5) Additional'),contact=await loadSheet(wb,'(1) Contact'),sites=await loadSheet(wb,'(2) Sites');
  const dateId=entries.some(e=>e.start||e.end)?await ensureDateStyle(wb):null;
@@ -404,7 +409,11 @@ function serializeWorkspace(){return {schema:3,year:state.year,files:state.files
 function restoreWorkspace(data){
  if(!data||data.schema!==3)throw Error('Structură de date veche. Creează un repository nou sau migrează manual datele existente.');
  state.year=Number(data.year)||2025;state.files=data.files||[];state.records=data.records||[];
- state.submissions=data.submissions||[];state.audit=data.audit||[];state.manualSites=data.manualSites||{};render();
+ state.submissions=data.submissions||[];state.audit=data.audit||[];state.manualSites=data.manualSites||{};
+ // Recover a previous submission whose year differs from the old default report year.
+ const years=[...new Set(state.records.map(x=>Number(x.year)).filter(y=>Number.isInteger(y)&&y>=2000&&y<=2100))];
+ if(!state.records.some(x=>Number(x.year)===state.year)&&years.length===1)state.year=years[0];
+ render();
 }
 function badgeData(){
  const entries=evalAll();return CATEGORIES.map(cat=>{
@@ -420,7 +429,8 @@ function render(){
  $('stationSuggestions').innerHTML=(state.template?.sites||[]).map(s=>`<option value="${html(s.name)}"></option>`).join('');
  $('sourceCount').textContent=`${state.files.length} fișiere · ${state.records.length} înregistrări`;
  const yrSubmissions=state.submissions.filter(s=>s.year===state.year);
- $('savedInfo').textContent=yrSubmissions.length?`Ultima depunere: ${new Date(yrSubmissions.at(-1).time).toLocaleString('ro-RO')} · ${yrSubmissions.at(-1).what}`:'Nicio analiză depusă pentru acest an.';
+ const otherYears=[...new Set(state.records.map(x=>Number(x.year)).filter(y=>Number.isInteger(y)&&y!==state.year))].sort();
+ $('savedInfo').textContent=yrSubmissions.length?`Ultima depunere: ${new Date(yrSubmissions.at(-1).time).toLocaleString('ro-RO')} · ${yrSubmissions.at(-1).what}`:(otherYears.length?`Nicio analiză pentru ${state.year}. Date disponibile pentru: ${otherYears.join(', ')}.`:'Nicio analiză depusă pentru acest an.');
  const d=evalAll();
  $('qualitySummary').textContent=`${d.filter(x=>x.status==='ok').length} fără atenționări · ${d.filter(x=>x.status==='warning').length} cu atenționări · ${d.filter(x=>x.status==='invalid').length} fără valori numerice`;
  $('warnings').innerHTML=d.filter(x=>x.warnings.length).slice(0,80).map(z=>`<div class="warning-line"><span>${html(z.x.originSite)} · ${html(z.group)} (${html(z.x.filename)})</span><small>${html(z.warnings.join(' • '))}</small></div>`).join('')||'<p>Nu există atenționări.</p>';
@@ -467,15 +477,40 @@ function drawManualFields(){
  }
 }
 async function saveSubmission(records,file=null){
- if(!window.NECD_CLOUD?.isConnected())throw Error('Conectează repository-ul privat pentru salvarea datelor.');
- if(file){await window.NECD_CLOUD.archiveSource(file,records[0].fileId);}
+ if(!window.NECD_CLOUD?.isConnected())throw Error('Google Drive nu este conectat.');
+ if(!records.length)throw Error('Nu există înregistrări de salvat.');
+ // Validate the new observations before writing to Drive. An invalid or out-of-year
+ // submission must not be silently archived and then fail during report generation.
+ const inspected=records.map(diagnose);
+ const valid=inspected.filter(x=>x.status!=='invalid');
+ if(!valid.length){
+  const issues=[...new Set(inspected.flatMap(x=>x.warnings))];
+  throw Error('Analiza nu conține valori care pot fi incluse în raport. '+(issues.join(' ')||'Verifică valorile numerice introduse.'));
+ }
+ if(!valid.some(x=>x.year===state.year)){
+  // Manual entries and laboratory files may refer to a different reporting year.
+  // Select the year represented by the new data instead of producing an empty report.
+  const counts=new Map();
+  for(const x of valid)counts.set(x.year,(counts.get(x.year)||0)+1);
+  state.year=[...counts].sort((a,b)=>b[1]-a[1])[0][0];
+  render();
+ }
+ if(file)await window.NECD_CLOUD.archiveSource(file,records[0].fileId);
  const entry={time:now(),what:file?file.name:CATEGORIES.find(c=>c.id===state.manualType).label,count:records.length,category:state.category,mode:file?'file':'manual',year:state.year};
  if(file)state.files.push({id:records[0].fileId,name:file.name,when:entry.time,count:records.length,kind:state.category});
  state.records.push(...records);state.submissions.push(entry);log('submission',`${entry.what} (${records.length})`);
+ // Check the selected year's actual report data before persisting the workspace.
+ if(!evalAll().some(x=>x.status!=='invalid'))
+  throw Error('Nu există valori valide pentru anul '+state.year+'. Selectează anul corect al analizei.');
  await window.NECD_CLOUD.saveWorkspace();
- // Every incremental save updates the single report stored in the private repository.
- const report=await makeReport();await window.NECD_CLOUD.saveReport(report.blob,auditCsv(),state.year);
- render();notice(`Salvat: ${entry.what}. Raportul NECD a fost actualizat (${report.count} înregistrări).`,'ok');
+ let report;
+ try{
+  report=await makeReport();
+  await window.NECD_CLOUD.saveReport(report.blob,auditCsv(),state.year);
+ }catch(error){
+  throw Error('Înregistrarea a fost salvată în Google Drive, dar raportul Excel nu a putut fi actualizat: '+error.message);
+ }
+ render();notice(`Salvat: ${entry.what}. Raportul NECD ${state.year} a fost actualizat (${report.count} înregistrări).`,'ok');
 }
 async function handleFile(){
  const f=$('labFile').files?.[0];if(!f)throw Error('Selectează un fișier.');

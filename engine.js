@@ -281,7 +281,7 @@ function diagnose(x){
  return {x,group:grp,site,year,start,end,warnings,status:warnings.length?'warning':'ok',fields,extra};
 }
 function evalAll(){
- const items=state.records.map(diagnose);const seen=new Map();
+ const items=state.records.filter(x=>(x.cycleId||'legacy')===state.cycleId).map(diagnose);const seen=new Map();
  for(const z of items){if(z.status==='invalid')continue;
   const fingerprint=[z.group,z.site?.code||z.x.originSite,z.year,z.start,z.end,z.x.kind==='ions'?z.x.level:'',z.x.kind==='nutrition'?z.x.species:''].join('|');
   const prev=seen.get(fingerprint);
@@ -303,7 +303,7 @@ async function loadPrivateTemplate(blob){
 }
 async function importFile(f){
  const buf=await f.arrayBuffer(),id=await hashBuffer(buf);
- if(state.files.some(x=>x.id===id))throw Error('Acest fișier a fost deja importat (conținut identic).');
+ if(state.files.some(x=>x.id===id&&(x.cycleId||'legacy')===state.cycleId))throw Error('Acest fișier a fost deja importat în raportul curent (conținut identic).');
  const file={id,name:f.name,when:now(),size:f.size,sourceCategory:state.category};
  let results=[];
  if(/\.csv$/i.test(f.name)){if(state.category!=='nutrition')throw Error('Un CSV de nutriție trebuie importat la Nutriție foliară.');results=parseNutrition(file,new TextDecoder('utf-8').decode(buf));}
@@ -343,7 +343,7 @@ function manualRecord(form){
  const end=type==='O3'||type==='NO2'||type==='NH3'?parseDate(fd.get('end')):null;
  const yr=Number((end||start||'').slice(0,4))||new Date().getFullYear();
  const record={id:`manual/${globalThis.crypto?.randomUUID?.()||('fallback-'+Date.now()+'-'+Math.random().toString(36).slice(2))}`,fileId:null,filename:'Introducere manuală',sheet:'Manual',sourceRow:0,
-   originSite:site.name,siteCode:site.code,year:yr,kind:'',manual:true,createdAt:now()};
+   originSite:site.name,siteCode:site.code,year:yr,cycleId:state.cycleId,kind:'',manual:true,createdAt:now()};
  if(['O3','NO2','NH3'].includes(type)){
   record.kind='air';record.parameter=type;record.start=start;record.end=end;
   record.replicates=[numeric(fd.get('rep1')),numeric(fd.get('rep2'))];
@@ -373,6 +373,9 @@ async function makeReport(){
  if(!state.template)throw Error('Șablonul Excel NECD din Google Drive nu este disponibil.');
  const entries=evalAll().filter(e=>e.status!=='invalid');
  if(!entries.length)throw Error('Nu există înregistrări cu valori numerice valide pentru raport. Verifică atenționările QA/QC.');
+ const years=new Map();
+ for(const entry of entries)years.set(entry.year,(years.get(entry.year)||0)+1);
+ const reportYear=[...years].sort((a,b)=>b[1]-a[1])[0]?.[0]||new Date().getFullYear();
  const wb=await workbookFromBuffer(state.template.buffer);
  const terrestrial=await loadSheet(wb,'(4) Terrestrial'),additional=await loadSheet(wb,'(5) Additional'),contact=await loadSheet(wb,'(1) Contact'),sites=await loadSheet(wb,'(2) Sites');
  const dateId=entries.some(e=>e.start||e.end)?await ensureDateStyle(wb):null;
@@ -397,10 +400,10 @@ async function makeReport(){
  for(const [sheet,updates] of [[terrestrial,T],[additional,A],[sites,SITE]])if(updates.size){
   wb.zip.file(sheet.path,editWorksheetXml(await wb.zip.file(sheet.path).async('string'),updates));
  }
- const contactUpdates=new Map();apply(contactUpdates,7,{D:state.year});
+ const contactUpdates=new Map();apply(contactUpdates,7,{D:reportYear});
  wb.zip.file(contact.path,editWorksheetXml(await wb.zip.file(contact.path).async('string'),contactUpdates));
  const blob=await wb.zip.generateAsync({type:'blob',compression:'DEFLATE',compressionOptions:{level:6}});
- return {blob,rows:rt-maxOccupied(terrestrial)-1,extra:ra-maxOccupied(additional)-1,count:entries.length,excluded:evalAll().length-entries.length};
+ return {blob,year:reportYear,rows:rt-maxOccupied(terrestrial)-1,extra:ra-maxOccupied(additional)-1,count:entries.length,excluded:evalAll().length-entries.length};
 }
 function auditCsv(){
  const rows=[['status','category','source_file','sheet','row','site','site_code','year','start','end','warnings']];
@@ -415,8 +418,12 @@ function restoreWorkspace(data){
  if(!data||data.schema!==3)throw Error('Structură de date veche. Creează un repository nou sau migrează manual datele existente.');
  // Preserve all existing records, including previously saved test submissions.
  // Reporting year is internal metadata, not a filter or user-facing setting.
- state.cycleId=String(data.cycleId||'legacy');state.year=new Date().getFullYear();state.files=data.files||[];state.records=data.records||[];
+ state.year=new Date().getFullYear();state.files=data.files||[];state.records=data.records||[];
  state.submissions=data.submissions||[];state.audit=data.audit||[];state.manualSites=data.manualSites||{};
+ // The backend merges audit events, so a new-report marker survives synchronization
+ // without requiring any change to the deployed Apps Script.
+ const cycles=state.audit.filter(a=>a.action==='new_report'&&a.description);
+ state.cycleId=cycles.length?String(cycles.sort((a,b)=>String(a.when).localeCompare(String(b.when))).at(-1).description):'legacy';
  render();
 }
 function badgeData(){
@@ -437,13 +444,13 @@ function render(){
   stationSelect.value=sites.some(s=>s.code===selected)?selected:'';
   stationSelect.disabled=!sites.length;
  }
- $('sourceCount').textContent=`${state.files.length} fișiere · ${state.records.length} înregistrări`;
- const latest=state.submissions.at(-1);
+ $('sourceCount').textContent=`${state.files.filter(x=>(x.cycleId||'legacy')===state.cycleId).length} fișiere · ${state.records.filter(x=>(x.cycleId||'legacy')===state.cycleId).length} înregistrări`;
+ const latest=state.submissions.filter(x=>(x.cycleId||'legacy')===state.cycleId).at(-1);
  $('savedInfo').textContent=latest?`Ultima depunere: ${new Date(latest.time).toLocaleString('ro-RO')} · ${latest.what}`:'Nicio analiză depusă încă.';
  const d=evalAll();
  $('qualitySummary').textContent=`${d.filter(x=>x.status==='ok').length} fără atenționări · ${d.filter(x=>x.status==='warning').length} cu atenționări · ${d.filter(x=>x.status==='invalid').length} fără valori numerice`;
  $('warnings').innerHTML=d.filter(x=>x.warnings.length).slice(0,80).map(z=>`<div class="warning-line"><span>${html(z.x.originSite)} · ${html(z.group)} (${html(z.x.filename)})</span><small>${html(z.warnings.join(' • '))}</small></div>`).join('')||'<p>Nu există atenționări.</p>';
- $('importList').innerHTML=state.submissions.slice().reverse().slice(0,12).map(s=>`<div class="submission"><b>${html(s.what)}</b><small>${new Date(s.time).toLocaleString('ro-RO')} · ${s.count} înregistrări</small></div>`).join('')||'<p class="muted">Nu au fost salvate analize.</p>';
+ $('importList').innerHTML=state.submissions.filter(x=>(x.cycleId||'legacy')===state.cycleId).slice().reverse().slice(0,12).map(s=>`<div class="submission"><b>${html(s.what)}</b><small>${new Date(s.time).toLocaleString('ro-RO')} · ${s.count} înregistrări</small></div>`).join('')||'<p class="muted">Nu au fost salvate analize.</p>';
  const methods=$('entryMethod');if(methods)methods.value=state.method;
  const category=$('category');if(category)category.value=state.category;
  $('entryFile').hidden=state.method!=='file';$('entryManual').hidden=state.method!=='manual';
@@ -488,19 +495,28 @@ function drawManualFields(){
 async function saveSubmission(records,file=null){
  if(!window.NECD_CLOUD?.isConnected())throw Error('Google Drive nu este conectat.');
  if(!records.length)throw Error('Nu există înregistrări de salvat.');
+ for(const record of records)record.cycleId=state.cycleId;
  const inspected=records.map(diagnose);
  if(!inspected.some(x=>x.status!=='invalid')){
   const issues=[...new Set(inspected.flatMap(x=>x.warnings))];
   throw Error('Analiza nu conține valori numerice valide. '+issues.join(' '));
  }
  if(file)await window.NECD_CLOUD.archiveSource(file,records[0].fileId);
- const entry={time:now(),what:file?file.name:CATEGORIES.find(c=>c.id===state.manualType).label,count:records.length,category:state.category,mode:file?'file':'manual',year:new Date().getFullYear()};
- if(file)state.files.push({id:records[0].fileId,name:file.name,when:entry.time,count:records.length,kind:state.category});
+ const entry={time:now(),what:file?file.name:CATEGORIES.find(c=>c.id===state.manualType).label,count:records.length,category:state.category,mode:file?'file':'manual',year:new Date().getFullYear(),cycleId:state.cycleId};
+ if(file)state.files.push({id:records[0].fileId,name:file.name,when:entry.time,count:records.length,kind:state.category,cycleId:state.cycleId});
  state.records.push(...records);state.submissions.push(entry);log('submission',`${entry.what} (${records.length})`);
- // Store observations now. The annual Excel is generated only on explicit request.
+ // Persist each submission, then regenerate the cumulative Excel with whatever
+ // categories have been submitted so far. An incomplete annual dataset is valid.
  await window.NECD_CLOUD.saveWorkspace();
+ let report;
+ try{
+  report=await makeReport();
+  await window.NECD_CLOUD.saveReport(report.blob,auditCsv(),report.year);
+ }catch(error){
+  throw Error('Datele au fost salvate în Google Drive, dar Excelul nu a fost actualizat: '+error.message);
+ }
  render();
- notice(`Salvat în Google Drive: ${entry.what} (${records.length} înregistrări).`,'ok');
+ notice(`Salvat în Google Drive: ${entry.what}. Excelul NECD a fost actualizat (${report.count} înregistrări).`,'ok');
 }
 async function handleFile(){
  const f=$('labFile').files?.[0];if(!f)throw Error('Selectează un fișier.');
@@ -509,6 +525,13 @@ async function handleFile(){
  await saveSubmission(parsed.results,f);$('labFile').value='';
 }
 async function handleManual(ev){ev.preventDefault();const form=ev.currentTarget;const rec=manualRecord(form);await saveSubmission([rec]);form.reset();render();drawManualFields();}
+function beginNewReport(){
+ const id='report_'+(globalThis.crypto?.randomUUID?.()||Date.now()+'_'+Math.random().toString(36).slice(2));
+ state.cycleId=id;
+ state.year=new Date().getFullYear();
+ log('new_report',id);
+ render();
+}
 function setBusy(b){state.busy=b;for(const btn of ['importBtn','manualSubmit','exportBtn','newReportBtn'])if($(btn))$(btn).disabled=b;}
 async function safely(task){
  setBusy(true);try{await task();}catch(e){console.error(e);notice(e.message||String(e),'error');}finally{setBusy(false);render();}
@@ -520,7 +543,7 @@ function setup(){
  $('manualType').addEventListener('change',ev=>{state.manualType=ev.target.value;drawManualFields();});
  $('importBtn').addEventListener('click',()=>safely(handleFile));
  $('manualForm').addEventListener('submit',ev=>{ev.preventDefault();safely(()=>handleManual(ev));});
- $('exportBtn').addEventListener('click',()=>safely(async()=>{const result=await makeReport();await window.NECD_CLOUD.saveReport(result.blob,auditCsv(),state.year);download(result.blob,`NECD_Art9_${state.year}.xlsx`);notice('Raportul anual NECD a fost generat, salvat în Google Drive și descărcat.','ok');}));
+ $('exportBtn').addEventListener('click',()=>safely(async()=>{const result=await makeReport();await window.NECD_CLOUD.saveReport(result.blob,auditCsv(),result.year);download(result.blob,`NECD_Art9_${result.year}.xlsx`);notice('Excelul NECD actualizat a fost descărcat.','ok');}));
  $('csvBtn').addEventListener('click',()=>download(auditCsv(),'NECD_QAQC.csv'));
  $('newReportBtn').addEventListener('click',()=>safely(async()=>{
   if(!window.NECD_CLOUD?.isConnected())throw Error('Google Drive nu este conectat.');
@@ -544,5 +567,5 @@ function drawMapping(){
  const missing=[...new Set(state.records.filter(x=>!(x.siteCode&&state.template?.sites.some(s=>s.code===x.siteCode))&&!station(x.originSite)).map(x=>x.originSite))];
  $('siteMapPanel').innerHTML=missing.length?missing.map(raw=>`<label><span>${html(raw)}</span><select data-site="${html(raw)}"><option value="">Nicio asociere (păstrează denumirea)</option>${(state.template?.sites||[]).map(s=>`<option value="${html(s.code)}" ${state.manualSites[normalized(raw)]===s.code?'selected':''}>${html(s.code)} · ${html(s.name)}</option>`).join('')}</select></label>`).join(''):'<p>Toate stațiile au cod identificat.</p>';
 }
-window.NECD_APP={state,loadPrivateTemplate,serializeWorkspace,restoreWorkspace,render,download,notice,makeReport};
+window.NECD_APP={state,loadPrivateTemplate,serializeWorkspace,restoreWorkspace,render,download,notice,makeReport,beginNewReport};
 document.addEventListener('DOMContentLoaded',setup);

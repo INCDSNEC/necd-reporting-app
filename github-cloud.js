@@ -54,7 +54,7 @@
    isOnline=true;status('Sincronizat · GitHub privat',true);window.NECD_APP.render();
   }catch(e){
    isOnline=false;status('Conexiune nereușită');
-   if(/GitHub \\(401\\)/.test(e.message)){
+   if(e.message.includes('GitHub (401)')){
     localStorage.removeItem(TOKEN_STORAGE);
     window.location.replace('config.html?invalid=1');
     return;

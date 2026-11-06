@@ -2,9 +2,10 @@
 'use strict';
 (()=>{
  const $=id=>document.getElementById(id);
- const TARGET_KEY='necd-v3-target', TOKEN_KEY='necd-v3-session-token';
+ const TOKEN_KEY='necd-v3-session-token';
+ const FIXED_OWNER='INCDSNEC', FIXED_REPO='necd-reporting-data';
  const TEMPLATE='NECD art9 Reporting_06_26.xlsx';
- let owner='',repo='',token='',isOnline=false,workspaceSha=null;
+ let owner=FIXED_OWNER,repo=FIXED_REPO,token='',isOnline=false,workspaceSha=null;
  let queue=Promise.resolve();
  const encode=path=>path.split('/').map(encodeURIComponent).join('/');
  const url=path=>`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encode(path)}`;
@@ -42,16 +43,16 @@
  }
  async function connect(ev){
   ev?.preventDefault();
-  const o=$('gitOwner').value.trim(),r=$('gitRepo').value.trim(),t=$('gitToken').value.trim()||sessionStorage.getItem(TOKEN_KEY)||'';
-  if(!/^[A-Za-z0-9-]+$/.test(o)||!/^[\w.\-]+$/.test(r)||!t)throw Error('Completează utilizatorul, numele repository-ului și tokenul.');
-  owner=o;repo=r;token=t;status('Conectare…');
+  const t=$('gitToken').value.trim()||sessionStorage.getItem(TOKEN_KEY)||'';
+  if(!t)throw Error('Introdu tokenul de acces.');
+  token=t;status('Conectare…');
   try{
    const info=await req(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
    if(!info.private)throw Error('Repository-ul pentru date trebuie să fie privat.');
    const template=await getFile(TEMPLATE);
    await window.NECD_APP.loadPrivateTemplate(new Blob([template.bytes]));
    await fetchWorkspace();
-   isOnline=true;localStorage.setItem(TARGET_KEY,JSON.stringify({owner,repo}));sessionStorage.setItem(TOKEN_KEY,token);
+   isOnline=true;sessionStorage.setItem(TOKEN_KEY,token);
    $('gitToken').value='';$('connectForm').hidden=true;$('online').hidden=false;
    status('Sincronizat · GitHub privat',true);window.NECD_APP.render();
   }catch(e){isOnline=false;status('Conexiune nereușită: '+e.message);throw e;}
@@ -102,13 +103,12 @@
   status('Neconectat');
  }
  function setup(){
-  try{const x=JSON.parse(localStorage.getItem(TARGET_KEY)||'null');if(x){$('gitOwner').value=x.owner;$('gitRepo').value=x.repo;}}catch{}
   $('connectForm').addEventListener('submit',ev=>connect(ev).catch(e=>window.NECD_APP.notice(e.message,'error')));
   $('refreshBtn').addEventListener('click',()=>refresh().catch(e=>window.NECD_APP.notice(e.message,'error')));
   $('disconnectBtn').addEventListener('click',disconnect);
   $('onlineReportBtn').addEventListener('click',()=>retrieveReport().catch(e=>window.NECD_APP.notice(e.message,'error')));
   const remembered=sessionStorage.getItem(TOKEN_KEY);
-  if(remembered&&$('gitOwner').value&&$('gitRepo').value){$('gitToken').value=remembered;connect().catch(e=>window.NECD_APP.notice(e.message,'error'));}
+  if(remembered){$('gitToken').value=remembered;connect().catch(e=>window.NECD_APP.notice(e.message,'error'));}
  }
  window.NECD_CLOUD={isConnected:()=>isOnline,saveWorkspace,archiveSource,saveReport,refresh};
  document.addEventListener('DOMContentLoaded',setup);

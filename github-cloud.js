@@ -41,21 +41,19 @@
   if(item){const obj=JSON.parse(new TextDecoder().decode(item.bytes));window.NECD_APP.restoreWorkspace(obj);workspaceSha=item.sha;}
   else{workspaceSha=null;window.NECD_APP.restoreWorkspace({schema:3,year:2025,records:[],files:[],submissions:[],audit:[],manualSites:{}});}
  }
- async function connect(ev){
-  ev?.preventDefault();
-  const t=$('gitToken').value.trim()||sessionStorage.getItem(TOKEN_KEY)||'';
-  if(!t)throw Error('Introdu tokenul de acces.');
-  token=t;status('Conectare…');
+ async function connect(){
+  if(!ACCESS_KEY || ACCESS_KEY==='REPLACE_ME'){
+   status('Token neconfigurat');window.NECD_APP.notice('Configurează ACCESS_KEY în github-cloud.js.','error');return;
+  }
+  token=ACCESS_KEY;status('Conectare…');
   try{
    const info=await req(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
    if(!info.private)throw Error('Repository-ul pentru date trebuie să fie privat.');
    const template=await getFile(TEMPLATE);
    await window.NECD_APP.loadPrivateTemplate(new Blob([template.bytes]));
    await fetchWorkspace();
-   isOnline=true;sessionStorage.setItem(TOKEN_KEY,token);
-   $('gitToken').value='';$('connectForm').hidden=true;$('online').hidden=false;
-   status('Sincronizat · GitHub privat',true);window.NECD_APP.render();
-  }catch(e){isOnline=false;status('Conexiune nereușită: '+e.message);throw e;}
+   isOnline=true;status('Sincronizat · GitHub privat',true);window.NECD_APP.render();
+  }catch(e){isOnline=false;status('Conexiune nereușită');window.NECD_APP.notice(e.message,'error');}
  }
  async function saveWorkspace(){
   if(!isOnline)throw Error('Nu ești conectat la spațiul privat.');
@@ -96,20 +94,7 @@
   if(window.NECD_APP.state.busy)throw Error('O depunere este în curs.');
   await fetchWorkspace();status('Date actualizate de pe GitHub',true);window.NECD_APP.render();
  }
- function disconnect(){
-  token='';isOnline=false;workspaceSha=null;sessionStorage.removeItem(TOKEN_KEY);
-  $('connectForm').hidden=false;$('online').hidden=true;window.NECD_APP.state.template=null;
-  window.NECD_APP.restoreWorkspace({schema:3,year:2025,records:[],files:[],submissions:[],audit:[],manualSites:{}});
-  status('Neconectat');
- }
- function setup(){
-  $('connectForm').addEventListener('submit',ev=>connect(ev).catch(e=>window.NECD_APP.notice(e.message,'error')));
-  $('refreshBtn').addEventListener('click',()=>refresh().catch(e=>window.NECD_APP.notice(e.message,'error')));
-  $('disconnectBtn').addEventListener('click',disconnect);
-  $('onlineReportBtn').addEventListener('click',()=>retrieveReport().catch(e=>window.NECD_APP.notice(e.message,'error')));
-  const remembered=sessionStorage.getItem(TOKEN_KEY);
-  if(remembered){$('gitToken').value=remembered;connect().catch(e=>window.NECD_APP.notice(e.message,'error'));}
- }
+ function setup(){connect();}
  window.NECD_CLOUD={isConnected:()=>isOnline,saveWorkspace,archiveSource,saveReport,refresh};
  document.addEventListener('DOMContentLoaded',setup);
 })();

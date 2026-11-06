@@ -2,7 +2,7 @@
 'use strict';
 const NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
-const state={year:new Date().getFullYear(),template:null,files:[],records:[],submissions:[],manualSites:{},audit:[],category:'air',method:'file',manualType:'O3',busy:false};
+const state={year:new Date().getFullYear(),cycleId:'legacy',template:null,files:[],records:[],submissions:[],manualSites:{},audit:[],category:'air',method:'file',manualType:'O3',busy:false};
 const $ = id => document.getElementById(id);
 const escapeHtml = s => String(s??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x]));
 const normalized = s => String(s??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ');
@@ -410,12 +410,12 @@ function auditCsv(){
  return new Blob(['\ufeff'+text],{type:'text/csv;charset=utf-8'});
 }
 function download(blob,name){const u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=name;document.body.append(a);a.click();setTimeout(()=>{URL.revokeObjectURL(u);a.remove();},1200);}
-function serializeWorkspace(){return {schema:3,year:state.year,files:state.files,records:state.records,submissions:state.submissions,audit:state.audit,manualSites:state.manualSites,updatedAt:now()};}
+function serializeWorkspace(){return {schema:3,cycleId:state.cycleId,year:state.year,files:state.files,records:state.records,submissions:state.submissions,audit:state.audit,manualSites:state.manualSites,updatedAt:now()};}
 function restoreWorkspace(data){
  if(!data||data.schema!==3)throw Error('Structură de date veche. Creează un repository nou sau migrează manual datele existente.');
  // Preserve all existing records, including previously saved test submissions.
  // Reporting year is internal metadata, not a filter or user-facing setting.
- state.year=new Date().getFullYear();state.files=data.files||[];state.records=data.records||[];
+ state.cycleId=String(data.cycleId||'legacy');state.year=new Date().getFullYear();state.files=data.files||[];state.records=data.records||[];
  state.submissions=data.submissions||[];state.audit=data.audit||[];state.manualSites=data.manualSites||{};
  render();
 }
@@ -509,7 +509,7 @@ async function handleFile(){
  await saveSubmission(parsed.results,f);$('labFile').value='';
 }
 async function handleManual(ev){ev.preventDefault();const form=ev.currentTarget;const rec=manualRecord(form);await saveSubmission([rec]);form.reset();render();drawManualFields();}
-function setBusy(b){state.busy=b;for(const btn of ['importBtn','manualSubmit','exportBtn'])if($(btn))$(btn).disabled=b;}
+function setBusy(b){state.busy=b;for(const btn of ['importBtn','manualSubmit','exportBtn','newReportBtn'])if($(btn))$(btn).disabled=b;}
 async function safely(task){
  setBusy(true);try{await task();}catch(e){console.error(e);notice(e.message||String(e),'error');}finally{setBusy(false);render();}
 }
@@ -522,6 +522,17 @@ function setup(){
  $('manualForm').addEventListener('submit',ev=>{ev.preventDefault();safely(()=>handleManual(ev));});
  $('exportBtn').addEventListener('click',()=>safely(async()=>{const result=await makeReport();await window.NECD_CLOUD.saveReport(result.blob,auditCsv(),state.year);download(result.blob,`NECD_Art9_${state.year}.xlsx`);notice('Raportul anual NECD a fost generat, salvat în Google Drive și descărcat.','ok');}));
  $('csvBtn').addEventListener('click',()=>download(auditCsv(),'NECD_QAQC.csv'));
+ $('newReportBtn').addEventListener('click',()=>safely(async()=>{
+  if(!window.NECD_CLOUD?.isConnected())throw Error('Google Drive nu este conectat.');
+  const count=state.records.length;
+  if(!window.confirm(count
+   ?`Arhivez cele ${count} înregistrări și încep un raport nou, gol. Datele și rapoartele vechi rămân în Google Drive. Continui?`
+   :'Încep un raport nou, gol? Raportul curent va fi arhivat în Google Drive.'))return;
+  await window.NECD_CLOUD.startNewReport();
+  $('manualForm').reset();
+  drawManualFields();
+  notice('Raport nou început. Datele anterioare au fost arhivate în Google Drive.','ok');
+ }));
  $('detailsBtn').addEventListener('click',()=>{$('details').hidden=!$('details').hidden;});
  $('siteMapToggle').addEventListener('click',()=>{const pane=$('siteMapPanel');pane.hidden=!pane.hidden;if(!pane.hidden)drawMapping();});
  $('siteMapPanel').addEventListener('change',ev=>{if(!ev.target.dataset.site)return;

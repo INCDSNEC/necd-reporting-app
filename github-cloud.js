@@ -2,7 +2,7 @@
 'use strict';
 (()=>{
  const $=id=>document.getElementById(id);
- const TOKEN_KEY='necd-v3-session-token';
+ const ACCESS_KEY='REPLACE_ME'; // Paste your GitHub fine-grained PAT here once.
  const FIXED_OWNER='INCDSNEC', FIXED_REPO='necd-reporting-data';
  const TEMPLATE='NECD art9 Reporting_06_26.xlsx';
  let owner=FIXED_OWNER,repo=FIXED_REPO,token='',isOnline=false,workspaceSha=null;

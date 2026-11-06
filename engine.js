@@ -2,7 +2,7 @@
 'use strict';
 const NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
-const state={year:2025,template:null,files:[],records:[],submissions:[],manualSites:{},audit:[],category:'air',method:'file',manualType:'O3',busy:false};
+const state={year:new Date().getFullYear(),template:null,files:[],records:[],submissions:[],manualSites:{},audit:[],category:'air',method:'file',manualType:'O3',busy:false};
 const $ = id => document.getElementById(id);
 const escapeHtml = s => String(s??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x]));
 const normalized = s => String(s??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ');
@@ -217,6 +217,7 @@ function log(action,description){state.audit.push({when:now(),action,description
 function isWellFormed(v){return numeric(v)!==null;}
 function station(raw){
  const rawName=String(raw??'').trim();const key=normalized(rawName);
+ if(state.template){const byCode=state.template.sites.find(s=>s.code===rawName);if(byCode)return byCode;}
  const override=state.manualSites[key];
  if(override&&state.template)return state.template.sites.find(s=>s.code===override)||null;
  if(!state.template||!key)return null;
@@ -228,10 +229,9 @@ function station(raw){
  return partial.length===1?partial[0]:null;
 }
 function diagnose(x){
- const warnings=[];const grp=groupOf(x);const site=station(x.originSite);let fields={},extra={};
+ const warnings=[];const grp=groupOf(x);const site=(x.siteCode&&state.template?.sites.find(s=>s.code===x.siteCode))||station(x.originSite);let fields={},extra={};
  const year=Number.isFinite(x.year)&&x.year>=1900&&x.year<=2100?x.year:state.year;
  if(!site)warnings.push(`Stația „${x.originSite||'nespecificată'}” nu are cod confirmat în șablon; se păstrează denumirea originală.`);
- if(Number.isFinite(x.year)&&x.year!==state.year)warnings.push(`An ${x.year}, diferit de anul raportului (${state.year}).`);
  let start=x.start||null,end=x.end||null;
  if(grp==='O3'||grp==='NO2'||grp==='NH3'){
   let value=null;
@@ -281,7 +281,7 @@ function diagnose(x){
  return {x,group:grp,site,year,start,end,warnings,status:warnings.length?'warning':'ok',fields,extra};
 }
 function evalAll(){
- const items=state.records.map(diagnose).filter(e=>e.year===state.year);const seen=new Map();
+ const items=state.records.map(diagnose);const seen=new Map();
  for(const z of items){if(z.status==='invalid')continue;
   const fingerprint=[z.group,z.site?.code||z.x.originSite,z.year,z.start,z.end,z.x.kind==='ions'?z.x.level:'',z.x.kind==='nutrition'?z.x.species:''].join('|');
   const prev=seen.get(fingerprint);
@@ -330,12 +330,22 @@ async function hashBuffer(buffer){
 }
 function fieldsNumeric(names,fd){const out={};for(const k of names){const v=String(fd.get(k)||'').trim();out[k]=numeric(v);}return out;}
 function manualRecord(form){
- const fd=new FormData(form),type=state.manualType,raw=String(fd.get('site')||'').trim(),yr=numeric(fd.get('year'))||state.year;
- if(!raw)throw Error('Completează stația.');
+ const fd=new FormData(form),type=state.manualType,code=String(fd.get('site')||'').trim();
+ const site=state.template?.sites.find(s=>s.code===code);
+ if(!site)throw Error('Selectează o stație / un plot din listă.');
+ // Manual entry requires decimal points. Imported laboratory files retain their original parsing.
+ for(const el of form.querySelectorAll('[data-decimal]')){
+  const value=el.value.trim();
+  if(value&&!/^-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(value))
+   throw Error('Valoare invalidă pentru '+el.name+'. Folosește punctul pentru zecimale (ex. 0.45).');
+ }
+ const start=type==='O3'||type==='NO2'||type==='NH3'?parseDate(fd.get('start')):null;
+ const end=type==='O3'||type==='NO2'||type==='NH3'?parseDate(fd.get('end')):null;
+ const yr=Number((end||start||'').slice(0,4))||new Date().getFullYear();
  const record={id:`manual/${globalThis.crypto?.randomUUID?.()||('fallback-'+Date.now()+'-'+Math.random().toString(36).slice(2))}`,fileId:null,filename:'Introducere manuală',sheet:'Manual',sourceRow:0,
-   originSite:raw,year:yr,kind:'',manual:true,createdAt:now()};
+   originSite:site.name,siteCode:site.code,year:yr,kind:'',manual:true,createdAt:now()};
  if(['O3','NO2','NH3'].includes(type)){
-  record.kind='air';record.parameter=type;record.start=parseDate(fd.get('start'));record.end=parseDate(fd.get('end'));
+  record.kind='air';record.parameter=type;record.start=start;record.end=end;
   record.replicates=[numeric(fd.get('rep1')),numeric(fd.get('rep2'))];
   record.sourceAverage=type==='O3'?numeric(fd.get('avg')):null;
   if(record.sourceAverage===null&&!record.replicates.some(Number.isFinite))throw Error('Introdu o valoare numerică pentru concentrație.');
@@ -362,12 +372,7 @@ const apply=(map,row,fields)=>{if(!map.has(row))map.set(row,{});Object.assign(ma
 async function makeReport(){
  if(!state.template)throw Error('Șablonul Excel NECD din Google Drive nu este disponibil.');
  const entries=evalAll().filter(e=>e.status!=='invalid');
- if(!entries.length){
-  const otherYears=[...new Set(state.records.map(x=>Number(x.year)).filter(y=>Number.isInteger(y)&&y!==state.year))].sort();
-  const invalid=evalAll();
-  if(invalid.length)throw Error('Înregistrările pentru anul '+state.year+' nu conțin valori numerice valide. Verifică atenționările QA/QC.');
-  throw Error('Nu există înregistrări pentru anul '+state.year+'.'+(otherYears.length?' Există date pentru: '+otherYears.join(', ')+'.':''));
- }
+ if(!entries.length)throw Error('Nu există înregistrări cu valori numerice valide pentru raport. Verifică atenționările QA/QC.');
  const wb=await workbookFromBuffer(state.template.buffer);
  const terrestrial=await loadSheet(wb,'(4) Terrestrial'),additional=await loadSheet(wb,'(5) Additional'),contact=await loadSheet(wb,'(1) Contact'),sites=await loadSheet(wb,'(2) Sites');
  const dateId=entries.some(e=>e.start||e.end)?await ensureDateStyle(wb):null;
@@ -408,11 +413,10 @@ function download(blob,name){const u=URL.createObjectURL(blob),a=document.create
 function serializeWorkspace(){return {schema:3,year:state.year,files:state.files,records:state.records,submissions:state.submissions,audit:state.audit,manualSites:state.manualSites,updatedAt:now()};}
 function restoreWorkspace(data){
  if(!data||data.schema!==3)throw Error('Structură de date veche. Creează un repository nou sau migrează manual datele existente.');
- state.year=Number(data.year)||2025;state.files=data.files||[];state.records=data.records||[];
+ // Preserve all existing records, including previously saved test submissions.
+ // Reporting year is internal metadata, not a filter or user-facing setting.
+ state.year=new Date().getFullYear();state.files=data.files||[];state.records=data.records||[];
  state.submissions=data.submissions||[];state.audit=data.audit||[];state.manualSites=data.manualSites||{};
- // Recover a previous submission whose year differs from the old default report year.
- const years=[...new Set(state.records.map(x=>Number(x.year)).filter(y=>Number.isInteger(y)&&y>=2000&&y<=2100))];
- if(!state.records.some(x=>Number(x.year)===state.year)&&years.length===1)state.year=years[0];
  render();
 }
 function badgeData(){
@@ -425,16 +429,21 @@ function badgeData(){
 function render(){
  if(!$('traffic'))return;
  $('traffic').innerHTML=badgeData().map(c=>`<div class="traffic-item"><i class="dot ${c.status}"></i><div><b>${html(c.label)}</b><small>${c.number?`${c.number} înregistrări${c.warnings?' · '+c.warnings+' cu atenționări':''}`:'Nedepus'}${c.invalid?' · '+c.invalid+' fără valoare':''}</small></div></div>`).join('');
- $('projectYear').value=state.year;
- $('stationSuggestions').innerHTML=(state.template?.sites||[]).map(s=>`<option value="${html(s.name)}"></option>`).join('');
+ const stationSelect=$('manualSite');
+ if(stationSelect){
+  const selected=stationSelect.value;
+  const sites=(state.template?.sites||[]).slice().sort((a,b)=>a.name.localeCompare(b.name,'ro')||a.code.localeCompare(b.code));
+  stationSelect.innerHTML='<option value="">Selectează stația / plotul</option>'+sites.map(s=>`<option value="${html(s.code)}">${html(s.name)} (${html(s.code)})</option>`).join('');
+  stationSelect.value=sites.some(s=>s.code===selected)?selected:'';
+  stationSelect.disabled=!sites.length;
+ }
  $('sourceCount').textContent=`${state.files.length} fișiere · ${state.records.length} înregistrări`;
- const yrSubmissions=state.submissions.filter(s=>s.year===state.year);
- const otherYears=[...new Set(state.records.map(x=>Number(x.year)).filter(y=>Number.isInteger(y)&&y!==state.year))].sort();
- $('savedInfo').textContent=yrSubmissions.length?`Ultima depunere: ${new Date(yrSubmissions.at(-1).time).toLocaleString('ro-RO')} · ${yrSubmissions.at(-1).what}`:(otherYears.length?`Nicio analiză pentru ${state.year}. Date disponibile pentru: ${otherYears.join(', ')}.`:'Nicio analiză depusă pentru acest an.');
+ const latest=state.submissions.at(-1);
+ $('savedInfo').textContent=latest?`Ultima depunere: ${new Date(latest.time).toLocaleString('ro-RO')} · ${latest.what}`:'Nicio analiză depusă încă.';
  const d=evalAll();
  $('qualitySummary').textContent=`${d.filter(x=>x.status==='ok').length} fără atenționări · ${d.filter(x=>x.status==='warning').length} cu atenționări · ${d.filter(x=>x.status==='invalid').length} fără valori numerice`;
  $('warnings').innerHTML=d.filter(x=>x.warnings.length).slice(0,80).map(z=>`<div class="warning-line"><span>${html(z.x.originSite)} · ${html(z.group)} (${html(z.x.filename)})</span><small>${html(z.warnings.join(' • '))}</small></div>`).join('')||'<p>Nu există atenționări.</p>';
- $('importList').innerHTML=state.submissions.filter(s=>s.year===state.year).slice().reverse().slice(0,12).map(s=>`<div class="submission"><b>${html(s.what)}</b><small>${new Date(s.time).toLocaleString('ro-RO')} · ${s.count} înregistrări</small></div>`).join('')||'<p class="muted">Nu au fost salvate analize.</p>';
+ $('importList').innerHTML=state.submissions.slice().reverse().slice(0,12).map(s=>`<div class="submission"><b>${html(s.what)}</b><small>${new Date(s.time).toLocaleString('ro-RO')} · ${s.count} înregistrări</small></div>`).join('')||'<p class="muted">Nu au fost salvate analize.</p>';
  const methods=$('entryMethod');if(methods)methods.value=state.method;
  const category=$('category');if(category)category.value=state.category;
  $('entryFile').hidden=state.method!=='file';$('entryManual').hidden=state.method!=='manual';
@@ -449,68 +458,49 @@ function manualLayout(){
  subtype.innerHTML=opts.map(o=>`<option value="${o.id}">${html(o.label)}</option>`).join('');
  state.manualType=opts[0].id;subtype.value=state.manualType;drawManualFields();
 }
-function inputField(name,label,placeholder='',type='text',required=false){return `<label><span>${label}</span><input name="${name}" ${type==='date'?'type="date"':'type="text"'} placeholder="${html(placeholder)}" ${required?'required':''} autocomplete="off"><small class="input-error" hidden></small></label>`;}
+function inputField(name,label,placeholder='',type='text',required=false){return `<label><span>${label}</span><input name="${name}" ${type==='date'?'type="date"':'type="text"'} ${type==='decimal'?'data-decimal="true" inputmode="decimal"':''} placeholder="${html(placeholder)}" ${required?'required':''} autocomplete="off"><small class="input-error" hidden></small></label>`;}
 function drawManualFields(){
  let f='';const type=state.manualType;
  if(['O3','NO2','NH3'].includes(type)){
   f+=`<p class="muted">Concentrații finale în µg/m³. Pentru O₃ poți introduce direct valoarea finală (Avg). Pentru NO₂ și NH₃ introdu valorile finale ale replicilor.</p>`;
   f+=inputField('start','Data expunerii','','date')+inputField('end','Data colectării','','date');
-  if(type==='O3')f+=inputField('avg','Concentrația finală O₃ (Avg)','48,79');
-  f+=inputField('rep1','Concentrație finală, replica 1','0,792')+inputField('rep2','Concentrație finală, replica 2','0,838');
+  if(type==='O3')f+=inputField('avg','Concentrația finală O₃ (Avg)','48.79','decimal');
+  f+=inputField('rep1','Concentrație finală, replica 1','0.792','decimal')+inputField('rep2','Concentrație finală, replica 2','0.838','decimal');
  }else if(type==='nutrition'){
   f+=inputField('species','Specie','Molid / Fag / Gorun / Stejar', 'text',true);
-  for(const n of NUTRIENTS)f+=inputField(n,n,'12,25');
+  for(const n of NUTRIENTS)f+=inputField(n,n,'12.25','decimal');
  }else if(type==='soil'||type==='collector'){
   f+=type==='collector'?`<label><span>Tip colector</span><select name="level"><option value="TL">TL</option><option value="SC">SC</option></select></label>`:inputField('level','Adâncime / nivel','30 cm');
-  for(const n of IONS)f+=inputField(n,n,'0,56');
+  for(const n of IONS)f+=inputField(n,n,'0.56','decimal');
  }
  $('manualFields').innerHTML=f;
  const first=$('manualFields').querySelector('[name="level"]');if(first&&type==='soil')first.value='30 cm';
  // Basic numeric-format checks while typing, without scientific gating.
- for(const el of $('manualFields').querySelectorAll('input[type=text]')){
-  if(['species','level'].includes(el.name))continue;
+ for(const el of $('manualFields').querySelectorAll('[data-decimal]')){
   el.addEventListener('input',()=>{
-   const good=!el.value.trim()||numeric(el.value)!==null;
+   const good=!el.value.trim()||/^-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(el.value.trim());
    el.classList.toggle('invalid',!good);
-   const msg=el.parentElement.querySelector('.input-error');if(msg){msg.hidden=good;msg.textContent=good?'':'Folosește o valoare numerică (punct sau virgulă).';}
+   const msg=el.parentElement.querySelector('.input-error');
+   if(msg){msg.hidden=good;msg.textContent=good?'':'Folosește punctul pentru zecimale (ex. 0.45).';}
   });
  }
 }
 async function saveSubmission(records,file=null){
  if(!window.NECD_CLOUD?.isConnected())throw Error('Google Drive nu este conectat.');
  if(!records.length)throw Error('Nu există înregistrări de salvat.');
- // Validate the new observations before writing to Drive. An invalid or out-of-year
- // submission must not be silently archived and then fail during report generation.
  const inspected=records.map(diagnose);
- const valid=inspected.filter(x=>x.status!=='invalid');
- if(!valid.length){
+ if(!inspected.some(x=>x.status!=='invalid')){
   const issues=[...new Set(inspected.flatMap(x=>x.warnings))];
-  throw Error('Analiza nu conține valori care pot fi incluse în raport. '+(issues.join(' ')||'Verifică valorile numerice introduse.'));
- }
- if(!valid.some(x=>x.year===state.year)){
-  // Manual entries and laboratory files may refer to a different reporting year.
-  // Select the year represented by the new data instead of producing an empty report.
-  const counts=new Map();
-  for(const x of valid)counts.set(x.year,(counts.get(x.year)||0)+1);
-  state.year=[...counts].sort((a,b)=>b[1]-a[1])[0][0];
-  render();
+  throw Error('Analiza nu conține valori numerice valide. '+issues.join(' '));
  }
  if(file)await window.NECD_CLOUD.archiveSource(file,records[0].fileId);
- const entry={time:now(),what:file?file.name:CATEGORIES.find(c=>c.id===state.manualType).label,count:records.length,category:state.category,mode:file?'file':'manual',year:state.year};
+ const entry={time:now(),what:file?file.name:CATEGORIES.find(c=>c.id===state.manualType).label,count:records.length,category:state.category,mode:file?'file':'manual',year:new Date().getFullYear()};
  if(file)state.files.push({id:records[0].fileId,name:file.name,when:entry.time,count:records.length,kind:state.category});
  state.records.push(...records);state.submissions.push(entry);log('submission',`${entry.what} (${records.length})`);
- // Check the selected year's actual report data before persisting the workspace.
- if(!evalAll().some(x=>x.status!=='invalid'))
-  throw Error('Nu există valori valide pentru anul '+state.year+'. Selectează anul corect al analizei.');
+ // Store observations now. The annual Excel is generated only on explicit request.
  await window.NECD_CLOUD.saveWorkspace();
- let report;
- try{
-  report=await makeReport();
-  await window.NECD_CLOUD.saveReport(report.blob,auditCsv(),state.year);
- }catch(error){
-  throw Error('Înregistrarea a fost salvată în Google Drive, dar raportul Excel nu a putut fi actualizat: '+error.message);
- }
- render();notice(`Salvat: ${entry.what}. Raportul NECD ${state.year} a fost actualizat (${report.count} înregistrări).`,'ok');
+ render();
+ notice(`Salvat în Google Drive: ${entry.what} (${records.length} înregistrări).`,'ok');
 }
 async function handleFile(){
  const f=$('labFile').files?.[0];if(!f)throw Error('Selectează un fișier.');
@@ -524,16 +514,13 @@ async function safely(task){
  setBusy(true);try{await task();}catch(e){console.error(e);notice(e.message||String(e),'error');}finally{setBusy(false);render();}
 }
 function setup(){
- $('projectYear').addEventListener('change',ev=>{
-  const n=Number(ev.target.value);if(n>=2000&&n<=2100){state.year=n;log('year',String(n));render();}
- });
  $('category').innerHTML=LAB_CATEGORIES.map(c=>`<option value="${c.id}">${html(c.label)}</option>`).join('');
  $('category').addEventListener('change',ev=>{state.category=ev.target.value;manualLayout();render();});
  $('entryMethod').addEventListener('change',ev=>{state.method=ev.target.value;render();});
  $('manualType').addEventListener('change',ev=>{state.manualType=ev.target.value;drawManualFields();});
  $('importBtn').addEventListener('click',()=>safely(handleFile));
  $('manualForm').addEventListener('submit',ev=>{ev.preventDefault();safely(()=>handleManual(ev));});
- $('exportBtn').addEventListener('click',()=>safely(async()=>{const result=await makeReport();download(result.blob,`NECD_Art9_${state.year}.xlsx`);notice('Raportul NECD a fost descărcat.','ok');}));
+ $('exportBtn').addEventListener('click',()=>safely(async()=>{const result=await makeReport();await window.NECD_CLOUD.saveReport(result.blob,auditCsv(),state.year);download(result.blob,`NECD_Art9_${state.year}.xlsx`);notice('Raportul anual NECD a fost generat, salvat în Google Drive și descărcat.','ok');}));
  $('csvBtn').addEventListener('click',()=>download(auditCsv(),'NECD_QAQC.csv'));
  $('detailsBtn').addEventListener('click',()=>{$('details').hidden=!$('details').hidden;});
  $('siteMapToggle').addEventListener('click',()=>{const pane=$('siteMapPanel');pane.hidden=!pane.hidden;if(!pane.hidden)drawMapping();});
@@ -543,7 +530,7 @@ function setup(){
  manualLayout();render();
 }
 function drawMapping(){
- const missing=[...new Set(state.records.filter(x=>!station(x.originSite)).map(x=>x.originSite))];
+ const missing=[...new Set(state.records.filter(x=>!(x.siteCode&&state.template?.sites.some(s=>s.code===x.siteCode))&&!station(x.originSite)).map(x=>x.originSite))];
  $('siteMapPanel').innerHTML=missing.length?missing.map(raw=>`<label><span>${html(raw)}</span><select data-site="${html(raw)}"><option value="">Nicio asociere (păstrează denumirea)</option>${(state.template?.sites||[]).map(s=>`<option value="${html(s.code)}" ${state.manualSites[normalized(raw)]===s.code?'selected':''}>${html(s.code)} · ${html(s.name)}</option>`).join('')}</select></label>`).join(''):'<p>Toate stațiile au cod identificat.</p>';
 }
 window.NECD_APP={state,loadPrivateTemplate,serializeWorkspace,restoreWorkspace,render,download,notice,makeReport};

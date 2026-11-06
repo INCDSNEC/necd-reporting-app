@@ -2,7 +2,7 @@
 'use strict';
 (()=>{
  const $=id=>document.getElementById(id);
- const ACCESS_KEY='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'; // Paste your GitHub fine-grained PAT here once.
+ const TOKEN_STORAGE='necd-v4-access-token';
  const FIXED_OWNER='INCDSNEC', FIXED_REPO='necd-reporting-data';
  const TEMPLATE='NECD art9 Reporting_06_26.xlsx';
  let owner=FIXED_OWNER,repo=FIXED_REPO,token='',isOnline=false,workspaceSha=null;
@@ -42,10 +42,9 @@
   else{workspaceSha=null;window.NECD_APP.restoreWorkspace({schema:3,year:2025,records:[],files:[],submissions:[],audit:[],manualSites:{}});}
  }
  async function connect(){
-  if(!ACCESS_KEY || ACCESS_KEY==='REPLACE_ME'){
-   status('Token neconfigurat');window.NECD_APP.notice('Configurează ACCESS_KEY în github-cloud.js.','error');return;
-  }
-  token=ACCESS_KEY;status('Conectare…');
+  const stored=localStorage.getItem(TOKEN_STORAGE);
+  if(!stored){window.location.replace('config.html');return;}
+  token=stored.trim();status('Conectare…');
   try{
    const info=await req(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
    if(!info.private)throw Error('Repository-ul pentru date trebuie să fie privat.');
@@ -53,7 +52,15 @@
    await window.NECD_APP.loadPrivateTemplate(new Blob([template.bytes]));
    await fetchWorkspace();
    isOnline=true;status('Sincronizat · GitHub privat',true);window.NECD_APP.render();
-  }catch(e){isOnline=false;status('Conexiune nereușită');window.NECD_APP.notice(e.message,'error');}
+  }catch(e){
+   isOnline=false;status('Conexiune nereușită');
+   if(/GitHub \\(401\\)/.test(e.message)){
+    localStorage.removeItem(TOKEN_STORAGE);
+    window.location.replace('config.html?invalid=1');
+    return;
+   }
+   window.NECD_APP.notice(e.message,'error');
+  }
  }
  async function saveWorkspace(){
   if(!isOnline)throw Error('Nu ești conectat la spațiul privat.');

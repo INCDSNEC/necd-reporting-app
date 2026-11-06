@@ -2,3 +2,6 @@
 
 /* NECD Submission: compact single-token connection and simplified hero */
 .cloud-form{grid-template-columns:minmax(200px,420px) auto;justify-content:start}.hero{padding:30px 0 22px}.hero h1{margin:0}@media(max-width:540px){.cloud-form{grid-template-columns:1fr}}
+
+/* Mockup uses automatic repository connection. */
+.panel.cloud{display:none}
